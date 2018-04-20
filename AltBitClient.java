@@ -31,9 +31,8 @@ public class AltBitClient {
         }
     }
 
-    private DatagramPacket receive(DatagramPacket old) {
-        byte[] buffer = new byte[1024];
-        DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+    private DatagramPacket receive() {
+        DatagramPacket packet = new DatagramPacket(new byte[1024], 1024);
         try {
             socket.receive(packet);
         } catch (SocketTimeoutException e) {
@@ -46,7 +45,7 @@ public class AltBitClient {
     }
 
     private String decode(byte[] data) {
-        return new String(data, 0, data.length);
+        return new String(data, 0, data.length).trim();
     }
 
     private void send(DatagramPacket packet) {
@@ -58,69 +57,78 @@ public class AltBitClient {
     }
 
     private DatagramPacket interpret(DatagramPacket incoming, DatagramPacket resend) {
-        byte[] buffer = new byte[1024];
-        DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+        DatagramPacket packet = new DatagramPacket(new byte[1024], 1024);
         packet.setAddress(incoming.getAddress());
         packet.setPort(incoming.getPort());
 
-        // Get first 4 bytes of payload. This will give us the ACK code (0 or 1).
-        String bitChar = decode(incoming.getData()).substring(0, 4);
-
-        // Check to see if packet is a FIN. If so we can stop.
-        String command = decode(incoming.getData()).substring(4, 7);
-        if(command.equals("FIN")) {
-            this.transferComplete = true;
+        String decoded = decode(incoming.getData());
+        
+        // Check for a FILE command.
+        String command = decoded.substring(0, 8).trim();
+        if(command.contains("FIN")) {
+            transferComplete = true;
             return null;
         }
 
-        if(bitChar.equals("ACK0")) {
-            // If these do not match up something is out of sync. Resend packet.
-            if(bit)
+        String packetData =  "";
+        if(command.contains("ACK")) {
+            boolean ackBit = Integer.parseInt(decoded.substring(8, 9).trim()) != 0;
+            if(ackBit != bit) {
                 return resend;
-            // Flip bit and add payload.
-            String payload = "ACK0|";
-            packet.setData(payload.getBytes());
-            packet.setLength(payload.getBytes().length);
-            bit = true;
+            }
+            packetData = constructPacketData("ACK", null);   
+            bit = !bit;      
         }
-        else {
-            // If these do not match up something is out of sync. Resend packet.
-            if(!bit)
-                return resend;
-            // Flip bit and add payload.
-            String payload = "ACK1|";
-            packet.setData(payload.getBytes());
-            packet.setLength(payload.getBytes().length);
-            bit = false;
+
+        packet.setData(packetData.getBytes());
+        packet.setLength(packetData.getBytes().length);
+        return packet;
+    }
+
+    private String constructPacketData(String command, String payload) {
+        StringBuilder builder = new StringBuilder();
+        builder.append(command);
+        for(int i = builder.toString().length(); i < 8; i++)
+            builder.append(" ");
+        builder.append(bit);
+        if(payload != null) {
+            for(int i = builder.toString().length(); i < 24; i++)
+                builder.append(" ");
+            builder.append(payload);
         }
+        return builder.toString();
+    }
+
+        private DatagramPacket requestFilePacket(String filename) {
+        // Send initial request for file download.
+        DatagramPacket packet = new DatagramPacket(new byte[1024], 1024);
+        String data = constructPacketData("FILE", filename);
+        packet.setAddress(serverAddress);
+        packet.setPort(serverPort);
+        packet.setData(data.getBytes());
+        packet.setLength(data.getBytes().length);
         return packet;
     }
 
     void run(String filename) {
         // Send initial request for file download.
-        byte[] buffer = new byte[1024];
-        DatagramPacket requestPacket = new DatagramPacket(buffer, buffer.length);
-        String payload = "ACK0FILE" + filename + "|";
-        requestPacket.setData(payload.getBytes());
-        requestPacket.setLength(payload.getBytes().length);
-        requestPacket.setAddress(serverAddress);
-        requestPacket.setPort(serverPort);
-        bit = true;
-        printPacketContents(requestPacket);
-        send(requestPacket);
+        DatagramPacket request = requestFilePacket(filename);
+        printPacketContents(request);
+        send(request);
+        bit = !bit;
 
         // Set the resend packet to the original packet.
-        DatagramPacket resendPacket = requestPacket;
+        DatagramPacket resend = request;
         while(true) {
-            DatagramPacket incomingPacket = receive(resendPacket);
-            printPacketContents(incomingPacket);
-            DatagramPacket outgoingPacket = interpret(incomingPacket, resendPacket);
-            printPacketContents(outgoingPacket);
+            DatagramPacket incoming = receive();
+            printPacketContents(incoming);
+            DatagramPacket outgoing = interpret(incoming, resend);
+            printPacketContents(outgoing);
             if(transferComplete)
                 break;
-            send(outgoingPacket);
+            send(outgoing);
             // Update resend packet each time we send something.
-            resendPacket = outgoingPacket;
+            resend = outgoing;
         }
     }
 }

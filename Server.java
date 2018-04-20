@@ -1,6 +1,6 @@
 class Server {
     public static void main(String[] args) {
-        AltBitServer server = new AltBitServer(5000);
+        SelRepServer server = new SelRepServer(5000, 4);
         server.run();
     }
 }
